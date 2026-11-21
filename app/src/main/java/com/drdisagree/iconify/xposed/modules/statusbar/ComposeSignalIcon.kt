@@ -10,12 +10,15 @@ import com.drdisagree.iconify.data.keys.XposedKey
 import com.drdisagree.iconify.xposed.ModPack
 import com.drdisagree.iconify.xposed.core.PackageParam
 import com.drdisagree.iconify.xposed.core.compose.ComposeToolkit
+import com.drdisagree.iconify.xposed.core.hook.hookMethod
 import com.drdisagree.iconify.xposed.core.hook.hookMethodMatchPattern
 import com.drdisagree.iconify.xposed.core.hook.proceedWithArgs
+import com.drdisagree.iconify.xposed.core.hook.runAfter
 import com.drdisagree.iconify.xposed.core.log.log
 import com.drdisagree.iconify.xposed.core.reflect.callMethodSilently
 import com.drdisagree.iconify.xposed.core.reflect.findClass
 import com.drdisagree.iconify.xposed.core.reflect.getFieldSilently
+import com.drdisagree.iconify.xposed.core.reflect.setFieldSilently
 import com.drdisagree.iconify.xposed.utils.XPrefs.Xprefs
 import io.github.libxposed.api.XposedInterface
 import java.lang.reflect.Method
@@ -35,6 +38,10 @@ class ComposeSignalIcon(context: Context) : ModPack(context) {
     private var modifierCompanion: Any? = null
     @Volatile
     private var hookFailed = false
+    @Volatile
+    private var loggedXmlOnce = false
+    @Volatile
+    private var loggedComposeOnce = false
     private var toArgbMethod: Method? = null
     private val constantStateCache = mutableMapOf<Int, Drawable.ConstantState>()
     private val pendingSignal = ThreadLocal<PendingSignal?>()
@@ -143,6 +150,136 @@ class ComposeSignalIcon(context: Context) : ModPack(context) {
                     }
                 }
             }
+
+        hookXmlSignalDrawable()
+    }
+
+    private fun hookXmlSignalDrawable() {
+        val xmlResIdCache = HashMap<Int, Int>(16)
+        val xmlDrawableCache = HashMap<Int, Drawable>(16)
+        val paintFieldCache = HashMap<Class<*>, java.lang.reflect.Field?>(4)
+
+        fun getPaintColorFast(drawable: Drawable): Int {
+            val cls = drawable.javaClass
+            val field = if (paintFieldCache.containsKey(cls)) {
+                paintFieldCache[cls]
+            } else {
+                var f: java.lang.reflect.Field? = null
+                var cur: Class<*>? = cls
+                while (cur != null && f == null) {
+                    f = runCatching { cur.getDeclaredField("mForegroundPaint") }.getOrNull()
+                        ?: runCatching { cur.getDeclaredField("mPaint") }.getOrNull()
+                    cur = cur.superclass
+                }
+                f?.isAccessible = true
+                paintFieldCache[cls] = f
+                f
+            }
+            val paint = field?.let { runCatching { it.get(drawable) as? android.graphics.Paint }.getOrNull() }
+            return paint?.color ?: android.graphics.Color.WHITE
+        }
+
+        listOf(
+            "com.nothing.systemui.statusbar.pipeline.mobile.ui.view.NTSignalDrawable",
+            "com.android.settingslib.graph.SignalDrawable"
+        ).forEach { className ->
+            findClass(className, suppressError = true)
+                ?.hookMethod("draw")
+                ?.parameters(Canvas::class.java)
+                ?.suppressError()
+                ?.intercept { chain ->
+                    if (!useDrawableSignalIcon) return@intercept chain.proceed()
+
+                    val self = chain.thisObject as? Drawable
+                        ?: return@intercept chain.proceed()
+                    val canvas = chain.args[0] as? Canvas ?: return@intercept chain.proceed()
+                    val packed = self.level
+                    val level = packed and 0xFF
+                    val numLevels = (packed ushr 8) and 0xFF
+                    val rawBars = (numLevels - 1).takeIf { it in 3..5 }
+                        ?: return@intercept chain.proceed()
+                    val bars = if (rawBars == 3) 4 else rawBars
+                    val mappedLevel = if (rawBars == 3) {
+                        when (level.coerceIn(0, 3)) {
+                            0 -> 0
+                            1 -> 1
+                            2 -> 3
+                            else -> 4
+                        }
+                    } else {
+                        level.coerceIn(0, bars)
+                    }
+
+                    val showExclamation = ((packed ushr 16) and 0xFF) != 0
+                    val key = (mappedLevel shl 4) or (bars shl 1) or (if (showExclamation) 1 else 0)
+
+                    val drawable = xmlDrawableCache[key] ?: run {
+                        val id = xmlResIdCache.getOrPut(key) {
+                            val name = buildString {
+                                append("ic_mobile_").append(mappedLevel).append('_').append(bars).append("_bar")
+                                if (showExclamation) append("_error")
+                            }
+                            mContext.resources.getIdentifier(name, "drawable", SYSTEMUI_PACKAGE)
+                        }
+                        if (id == 0) return@intercept chain.proceed()
+                        val cs = constantStateCache.getOrPut(id) {
+                            mContext.resources.getDrawable(id, mContext.theme).constantState
+                                ?: return@intercept chain.proceed()
+                        }
+                        cs.newDrawable(mContext.resources, mContext.theme).mutate().also {
+                            xmlDrawableCache[key] = it
+                        }
+                    }
+
+                    val color = getPaintColorFast(self)
+                    drawable.setTint(color)
+                    drawable.bounds = self.bounds
+                    drawable.draw(canvas)
+                    null
+                }
+        }
+
+        hookNothingCustomMobileGroupIcon()
+    }
+
+    private fun hookNothingCustomMobileGroupIcon() {
+        val stackedClass = findClass(STACKED_MOBILE_ICON_CLASS, suppressError = true) ?: return
+        stackedClass.declaredMethods
+            .filter { it.returnType.name == "com.android.systemui.common.shared.model.Icon\$Resource" }
+            .forEach { method ->
+                method.runAfter { _, result ->
+                    if (!useDrawableSignalIcon || result == null) return@runAfter
+                    val resId = result.callMethodSilently("getResId") as? Int ?: return@runAfter
+                    val entryName = runCatching { mContext.resources.getResourceEntryName(resId) }
+                        .getOrNull() ?: return@runAfter
+
+                    if (!loggedXmlOnce) {
+                        loggedXmlOnce = true
+                        log(this@ComposeSignalIcon, "Nothing CustomMobileGroupIcon res: $entryName ($resId)")
+                    }
+
+                    val levelMatch = Regex("(\\d+)(?:_(?:4|5)_bar)?(?:_error)?$").find(entryName)
+                        ?: Regex("_(\\d+)_").find(entryName)
+                        ?: return@runAfter
+                    val level = levelMatch.groupValues[1].toIntOrNull() ?: return@runAfter
+                    val isError = entryName.contains("error") || entryName.contains("no_internet")
+                    val mappedLevel = when (level.coerceIn(0, 4)) {
+                        0 -> 0
+                        1 -> 1
+                        2 -> 3
+                        3 -> 4
+                        else -> 4
+                    }
+                    val targetName = buildString {
+                        append("ic_mobile_").append(mappedLevel).append("_4_bar")
+                        if (isError) append("_error")
+                    }
+                    val targetId = mContext.resources.getIdentifier(targetName, "drawable", SYSTEMUI_PACKAGE)
+                    if (targetId != 0) {
+                        result.setFieldSilently("res", targetId)
+                    }
+                }
+            }
     }
 
     private fun signalHook(
@@ -175,6 +312,15 @@ class ComposeSignalIcon(context: Context) : ModPack(context) {
 
             val signalModels = models(chain.args, parameterTypes) ?: return
             if (signalModels.isEmpty()) return
+
+            if (!loggedComposeOnce) {
+                loggedComposeOnce = true
+                val first = signalModels.firstOrNull()
+                log(
+                    this@ComposeSignalIcon,
+                    "Compose Signal entry: owner=$ownerClass enabled=$useDrawableSignalIcon model=${first?.javaClass?.name} levels=${first?.callMethodSilently("getNumberOfLevels")} level=${first?.callMethodSilently("getLevel")}"
+                )
+            }
 
             val drawables = signalModels.map { model ->
                 model?.let { signalDrawableFor(it) } ?: return
@@ -263,11 +409,23 @@ class ComposeSignalIcon(context: Context) : ModPack(context) {
         val showExclamation =
             model.callMethodSilently("getShowExclamationMark") as? Boolean ?: false
 
-        val bars = numberOfLevels - 1
-        if (bars !in 4..5 || level !in 0..bars) return null
+        val rawBars = numberOfLevels - 1
+        if (rawBars !in 3..5 || level !in 0..rawBars) return null
+
+        val bars = if (rawBars == 3) 4 else rawBars
+        val mappedLevel = if (rawBars == 3) {
+            when (level) {
+                0 -> 0
+                1 -> 1
+                2 -> 3
+                else -> 4
+            }
+        } else {
+            level
+        }
 
         val name = buildString {
-            append("ic_mobile_").append(level).append('_').append(bars).append("_bar")
+            append("ic_mobile_").append(mappedLevel).append('_').append(bars).append("_bar")
             if (showExclamation) append("_error")
         }
 

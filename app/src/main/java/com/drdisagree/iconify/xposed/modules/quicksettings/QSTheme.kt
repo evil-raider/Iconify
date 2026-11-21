@@ -78,6 +78,8 @@ class QSTheme(context: Context) : ModPack(context) {
     private var brightnessThumbColor = "#FFFFFF"
     private var brightnessGradient = false
     private var brightnessGradientEndColor = "#FFFFFF"
+    private var activeTileCornerOffset = 0f
+    private var inactiveTileCornerOffset = 0f
 
     private var sliderColorsConstructor: Constructor<*>? = null
     private var drawWithContentMethod: Method? = null
@@ -132,7 +134,12 @@ class QSTheme(context: Context) : ModPack(context) {
             brightnessThumbColor = getString(XposedKey.BRIGHTNESS_SLIDER_THUMB_COLOR)
             brightnessGradient = getBoolean(XposedKey.BRIGHTNESS_SLIDER_GRADIENT)
             brightnessGradientEndColor = getString(XposedKey.BRIGHTNESS_SLIDER_GRADIENT_END_COLOR)
+            activeTileCornerOffset = getFloat(XposedKey.QS_ACTIVE_TILE_CORNER_RADIUS_OFFSET)
+            inactiveTileCornerOffset = getFloat(XposedKey.QS_INACTIVE_TILE_CORNER_RADIUS_OFFSET)
         }
+
+        sliderColorsMap.clear()
+        themedSliderColors.clear()
 
         if (key.any { it in TILE_THEME_KEYS }) {
             mainHandler.post {
@@ -149,6 +156,7 @@ class QSTheme(context: Context) : ModPack(context) {
 
         hookBrightnessSlider()
         hookTileGradient()
+        hookNothingTiles()
         hookFooterActions()
 
         tileDefaultsClass
@@ -273,9 +281,13 @@ class QSTheme(context: Context) : ModPack(context) {
             .hookMethodMatchPattern("(Track|Thumb).*")
             .suppressError()
             .intercept { chain ->
+                if (!customQsTheme) return@intercept chain.proceed()
                 chain.proceedWithArgs { args -> themeBrightnessSlider(chain.executable as Method, args) }
             }
     }
+
+    private val sliderColorsMap = WeakHashMap<Any, Any>()
+    private val nonBrightnessSliderColors = WeakHashMap<Any, Boolean>()
 
     private fun themeBrightnessSlider(method: Method, args: Array<Any?>) {
         if (!customQsTheme) return
@@ -285,10 +297,19 @@ class QSTheme(context: Context) : ModPack(context) {
         if (colorsIndex == -1) return
 
         val colors = args[colorsIndex] ?: return
-        if (themedSliderColors.containsKey(colors) || !isCalledFromBrightnessSlider()) return
+        if (themedSliderColors.containsKey(colors) || nonBrightnessSliderColors.containsKey(colors)) return
 
-        val themedColors = createThemedSliderColors(colors) ?: return
-        themedSliderColors[themedColors] = true
+        val themedColors = sliderColorsMap[colors] ?: run {
+            if (!isCalledFromBrightnessSlider()) {
+                nonBrightnessSliderColors[colors] = true
+                return
+            }
+            createThemedSliderColors(colors)?.also {
+                sliderColorsMap[colors] = it
+                themedSliderColors[it] = true
+            }
+        } ?: return
+
         args[colorsIndex] = themedColors
 
         if (!brightnessGradient || !method.name.startsWith("Track")) return
@@ -578,6 +599,151 @@ class QSTheme(context: Context) : ModPack(context) {
             }
     }
 
+    private var nothingTileActiveDrawer: Any? = null
+    private var nothingTileInactiveDrawer: Any? = null
+    private val nothingTileActiveModCache = WeakHashMap<Any, Any>()
+    private val nothingTileInactiveModCache = WeakHashMap<Any, Any>()
+    private val nothingTileRect = RectF()
+    private val nothingTilePath = Path()
+    private val activeCushionColors = intArrayOf(0x33FFFFFF, 0x00000000, 0x26000000)
+    private val inactiveCushionColors = intArrayOf(0x1AFFFFFF, 0x00000000, 0x12000000)
+    private val cushionPositions = floatArrayOf(0f, 0.5f, 1f)
+
+    private fun hookNothingTiles() {
+        findClass(
+            "com.nothing.systemui.qs.workspace.workspace.QSTileOuterShellKt",
+            suppressError = true
+        )
+            .hookMethodMatchPattern("QSTileOuterShell-.*")
+            .suppressError()
+            .intercept { chain ->
+                if (!customQsTheme) return@intercept chain.proceed()
+                chain.proceedWithArgs { args ->
+                    val method = chain.executable as Method
+                    val types = method.parameterTypes
+                    val longIndices = types.indices.filter { types[it] == Long::class.javaPrimitiveType }
+                    val modifierIndex = types.indexOfFirst { it.name == COMPOSE_MODIFIER_CLASS }
+                    if (longIndices.size < 2 || modifierIndex == -1) return@proceedWithArgs
+
+                    val rawModifier = args[modifierIndex]
+                    val modifier = rawModifier
+                        ?.takeUnless { ComposeToolkit.isDefaultArg(method, args, modifierIndex) }
+                        ?: ComposeToolkit.emptyModifier
+                        ?: return@proceedWithArgs
+                    val original = tileModifierToOriginal[modifier] ?: modifier
+                    args[modifierIndex] = original
+
+                    val origBgComposeColor = args[longIndices[0]] as? Long ?: return@proceedWithArgs
+                    val origBgArgb = toArgbMethod?.invoke(null, origBgComposeColor) as? Int ?: 0
+                    val isActive = Color.alpha(origBgArgb) > 0 && Color.luminance(origBgArgb) > 0.65f
+
+                    val bgInt = (if (isActive) activeBgColor else inactiveBgColor).toColorInt()
+                    val contentInt = (if (isActive) activeIconColor else inactiveIconColor).toColorInt()
+
+                    args[longIndices[1]] = ComposeToolkit.colorOf(contentInt)
+
+                    if (activeTileGradient) {
+                        args[longIndices[0]] = ComposeToolkit.colorOf(0)
+                        val modCache = if (isActive) nothingTileActiveModCache else nothingTileInactiveModCache
+                        val cachedWrapped = modCache[original]
+                        if (cachedWrapped != null) {
+                            args[modifierIndex] = cachedWrapped
+                            ComposeToolkit.clearDefaultBit(method, args, modifierIndex)
+                        } else {
+                            val drawer = if (isActive) {
+                                nothingTileActiveDrawer ?: drawProxy { drawScope ->
+                                    drawNothingTileBackground(drawScope, true)
+                                }?.also { nothingTileActiveDrawer = it }
+                            } else {
+                                nothingTileInactiveDrawer ?: drawProxy { drawScope ->
+                                    drawNothingTileBackground(drawScope, false)
+                                }?.also { nothingTileInactiveDrawer = it }
+                            } ?: return@proceedWithArgs
+
+                            try {
+                                drawBehindMethod?.invoke(null, original, drawer)?.let {
+                                    tileModifierToOriginal[it] = original
+                                    modCache[original] = it
+                                    args[modifierIndex] = it
+                                    ComposeToolkit.clearDefaultBit(method, args, modifierIndex)
+                                }
+                            } catch (_: Throwable) {
+                            }
+                        }
+                    } else {
+                        args[longIndices[0]] = ComposeToolkit.colorOf(bgInt)
+                    }
+                }
+            }
+
+        findClass(
+            "com.nothing.systemui.qs.workspace.workspace.TileBodyKt",
+            suppressError = true
+        )
+            .hookMethodMatchPattern("IconDisc-.*")
+            .suppressError()
+            .intercept { chain ->
+                if (!customQsTheme) return@intercept chain.proceed()
+                chain.proceedWithArgs { args ->
+                    val colorIndex = (chain.executable as Method).parameterTypes
+                        .indexOfFirst { it == Long::class.javaPrimitiveType }
+                    if (colorIndex != -1) {
+                        args[colorIndex] = ComposeToolkit.colorOf(0)
+                    }
+                }
+            }
+    }
+
+    private fun drawNothingTileBackground(drawScope: Any, isActive: Boolean) {
+        try {
+            val canvas = nativeCanvasOf(drawScope) ?: return
+            val packedSize = drawSizeOf(drawScope) ?: return
+            val width = Float.fromBits((packedSize ushr 32).toInt())
+            val height = Float.fromBits((packedSize and 0xFFFFFFFFL).toInt())
+            if (width <= 0f || height <= 0f) return
+
+            val density = mContext.resources.displayMetrics.density
+            val insetPx = 5.5f * density
+            nothingTileRect.set(insetPx, insetPx, width - insetPx, height - insetPx)
+            if (nothingTileRect.width() <= 0f || nothingTileRect.height() <= 0f) return
+
+            val maxRadius = minOf(nothingTileRect.width(), nothingTileRect.height()) / 2f
+            val offset = if (activeTileCornerOffset != 0f) activeTileCornerOffset else inactiveTileCornerOffset
+            val radiusPx = (maxRadius + offset * density).coerceIn(4f * density, maxRadius)
+            nothingTilePath.reset()
+            nothingTilePath.addRoundRect(nothingTileRect, radiusPx, radiusPx, Path.Direction.CW)
+
+            val isRtl = drawScope.callMethodSilently("getLayoutDirection")?.toString() == "Rtl"
+            if (isActive) {
+                tileGradientPaint.shader = LinearGradient(
+                    if (isRtl) nothingTileRect.right else nothingTileRect.left, nothingTileRect.top,
+                    if (isRtl) nothingTileRect.left else nothingTileRect.right, nothingTileRect.top,
+                    activeBgColor.toColorInt(),
+                    activeTileGradientEndColor.toColorInt(),
+                    Shader.TileMode.CLAMP
+                )
+            } else {
+                tileGradientPaint.shader = null
+                tileGradientPaint.color = inactiveBgColor.toColorInt()
+            }
+            tileGradientPaint.alpha = 255
+            canvas.drawPath(nothingTilePath, tileGradientPaint)
+
+            // Cushion ("подушечка") highlight/shadow shading
+            tileGradientPaint.shader = LinearGradient(
+                nothingTileRect.left, nothingTileRect.top, nothingTileRect.left, nothingTileRect.bottom,
+                if (isActive) activeCushionColors else inactiveCushionColors,
+                cushionPositions,
+                Shader.TileMode.CLAMP
+            )
+            tileGradientPaint.alpha = 255
+            canvas.drawPath(nothingTilePath, tileGradientPaint)
+            tileGradientPaint.shader = null
+        } catch (throwable: Throwable) {
+            log(this@QSTheme, "Nothing tile gradient failed: $throwable")
+        }
+    }
+
     private fun applyTileGradient(method: Method, args: Array<Any?>) {
         val parameterTypes = method.parameterTypes
         val modifierIndex = parameterTypes.indexOfFirst { it.name == COMPOSE_MODIFIER_CLASS }
@@ -693,16 +859,37 @@ class QSTheme(context: Context) : ModPack(context) {
     private fun drawProxy(onDraw: (Any) -> Unit): Any? =
         ComposeToolkit.function1("IconifyDrawProxy") { drawScope -> onDraw(drawScope!!) }
 
+    private val canvasFieldCache = HashMap<Class<*>, java.lang.reflect.Field?>(4)
+    private val getSizeMethodCache = HashMap<Class<*>, Method?>(4)
+
     private fun nativeCanvasOf(drawScope: Any): Canvas? {
-        val composeCanvas = drawScope.callMethod("getDrawContext").callMethod("getCanvas")
-        return composeCanvas?.javaClass?.declaredFields
-            ?.firstOrNull { it.type == Canvas::class.java }
-            ?.apply { isAccessible = true }
-            ?.get(composeCanvas) as? Canvas
+        val composeCanvas = drawScope.callMethodSilently("getDrawContext")
+            ?.callMethodSilently("getCanvas") ?: return null
+        val cls = composeCanvas.javaClass
+        val field = if (canvasFieldCache.containsKey(cls)) {
+            canvasFieldCache[cls]
+        } else {
+            val found = cls.declaredFields.firstOrNull { it.type == Canvas::class.java }
+                ?.apply { isAccessible = true }
+            canvasFieldCache[cls] = found
+            found
+        }
+        return field?.get(composeCanvas) as? Canvas
     }
 
     private fun drawSizeOf(drawScope: Any): Long? {
-        return drawScope.callMethod("getDrawContext")?.callMethodByPrefix("getSize") as? Long
+        val ctx = drawScope.callMethodSilently("getDrawContext") ?: return null
+        val cls = ctx.javaClass
+        val method = if (getSizeMethodCache.containsKey(cls)) {
+            getSizeMethodCache[cls]
+        } else {
+            val found = cls.methods.firstOrNull {
+                it.name.startsWith("getSize") && it.parameterTypes.isEmpty()
+            }
+            getSizeMethodCache[cls] = found
+            found
+        }
+        return method?.invoke(ctx) as? Long
     }
 
     companion object {

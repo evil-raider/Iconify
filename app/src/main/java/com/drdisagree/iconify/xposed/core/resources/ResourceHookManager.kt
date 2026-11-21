@@ -147,7 +147,14 @@ object ResourceHookManager {
     ): Any? {
         val data = typeReplacements[resId]?.firstOrNull { it.condition() } ?: return null
         val value = data.value()
-        return if (toPixels) context?.toPx(value as Int) else value
+        return if (data.type == ResourceHookType.DIMENSION) {
+            val px = context?.toPx((value as Number).toInt()) ?: (value as Number).toInt()
+            if (toPixels) px else px.toFloat()
+        } else if (toPixels) {
+            context?.toPx((value as Number).toInt())
+        } else {
+            value
+        }
     }
 
     private fun applyOffset(resId: Int, value: Any?): Any? {

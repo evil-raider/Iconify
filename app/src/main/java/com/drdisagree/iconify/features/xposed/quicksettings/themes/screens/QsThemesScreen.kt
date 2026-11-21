@@ -17,6 +17,28 @@ val qsThemesPreferences = preferenceScreen {
             isMasterSwitch = true,
             title = stringRes(R.string.quick_settings_theme),
         )
+
+        action(
+            key = "qsThemePillowPreset",
+            title = stringRes("Пресет Nothing 7.3.0 (Подушечки)"),
+            summary = { stringRes("Применить цвета, градиент и скруглённый квадрат как на скрине") },
+            onClick = { param ->
+                param.prefController.apply {
+                    setBoolean(XposedKey.CUSTOM_QS_THEME, true)
+                    setBoolean(XposedKey.ACTIVE_QS_TILE_GRADIENT, true)
+                    setString(XposedKey.ACTIVE_QS_TILE_BACKGROUND_COLOR, "#00A6E8")
+                    setString(XposedKey.ACTIVE_QS_TILE_GRADIENT_END_COLOR, "#0086C9")
+                    setString(XposedKey.ACTIVE_QS_TILE_ICON_COLOR, "#0D1B24")
+                    setString(XposedKey.ACTIVE_QS_TILE_LABEL_COLOR, "#0D1B24")
+                    setString(XposedKey.INACTIVE_QS_TILE_BACKGROUND_COLOR, "#FFFFFF")
+                    setString(XposedKey.INACTIVE_QS_TILE_ICON_COLOR, "#32444D")
+                    setString(XposedKey.INACTIVE_QS_TILE_LABEL_COLOR, "#32444D")
+                    setString(XposedKey.UNAVAILABLE_QS_TILE_BACKGROUND_COLOR, "#E6E6E6")
+                    setFloat(XposedKey.QS_ACTIVE_TILE_CORNER_RADIUS_OFFSET, -26f)
+                    setFloat(XposedKey.QS_INACTIVE_TILE_CORNER_RADIUS_OFFSET, -26f)
+                }
+            }
+        )
     }
 
     category(title = stringRes(R.string.section_title_active_tile_colors)) {

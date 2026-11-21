@@ -29,6 +29,7 @@ import com.drdisagree.iconify.xposed.core.hook.hookMethod
 import com.drdisagree.iconify.xposed.core.hook.hookMethodMatchPattern
 import com.drdisagree.iconify.xposed.core.log.log
 import com.drdisagree.iconify.xposed.core.reflect.callMethod
+import com.drdisagree.iconify.xposed.core.reflect.callMethodSilently
 import com.drdisagree.iconify.xposed.core.reflect.createInstance
 import com.drdisagree.iconify.xposed.core.reflect.findClass
 import com.drdisagree.iconify.xposed.core.reflect.getAnyField
@@ -393,15 +394,16 @@ class ColorizeNotificationView(context: Context) : ModPack(context) {
                     expandableNotificationRow.getField("mCurrentBackgroundTint")
                 } as Int
 
-                val usesTransparentBackground = (expandableNotificationRow
-                    .callMethod("calculateBgColor", true, true) as Int)
-                    .hasTransparency()
+                val calculatedBg = expandableNotificationRow
+                    .callMethodSilently("calculateBgColor", true, true) as? Int
+                    ?: mCurrentBackgroundTint
+                val usesTransparentBackground = calculatedBg.hasTransparency()
                 val bgColor = (mNotifyBackgroundColor as Int)
                     .withSemiTransparency(isSemiTransparent = usesTransparentBackground)
 
                 if (mCurrentBackgroundTint == bgColor) return@runAfter
 
-                expandableNotificationRow.callMethod("setBackgroundTintColor", bgColor)
+                expandableNotificationRow.callMethodSilently("setBackgroundTintColor", bgColor)
                 expandableNotificationRow.setFieldSilently("mCurrentBackgroundTint", bgColor)
 
                 val notificationBackgroundView = expandableNotificationRow.getField(
@@ -418,6 +420,26 @@ class ColorizeNotificationView(context: Context) : ModPack(context) {
                         bgDrawable.getDrawable(2)::class.java.simpleName.contains("BackgroundBlurDrawable")
                     ) {
                         bgDrawable.getDrawable(2).callMethod("setColor", bgColor)
+                    } else if (bgDrawable is LayerDrawable && bgDrawable.numberOfLayers > 2) {
+                        if (bgDrawable.numberOfLayers == 3) {
+                            bgDrawable.getDrawable(2)?.let { layer ->
+                                DrawableCompat.setTint(layer.mutate(), bgColor)
+                            }
+                        } else {
+                            var tintedAny = false
+                            for (i in 3 until bgDrawable.numberOfLayers) {
+                                val layer = bgDrawable.getDrawable(i)
+                                if (layer is android.graphics.drawable.GradientDrawable && layer.colors == null) {
+                                    DrawableCompat.setTint(layer.mutate(), bgColor)
+                                    tintedAny = true
+                                }
+                            }
+                            if (!tintedAny) {
+                                bgDrawable.getDrawable(bgDrawable.numberOfLayers - 1)?.let { layer ->
+                                    DrawableCompat.setTint(layer.mutate(), bgColor)
+                                }
+                            }
+                        }
                     } else {
                         DrawableCompat.setTint(bgDrawable, bgColor)
                     }

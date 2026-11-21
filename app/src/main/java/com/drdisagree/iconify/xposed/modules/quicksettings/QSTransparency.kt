@@ -239,6 +239,9 @@ class QSTransparency(context: Context) : ModPack(context) {
             .hookMethod("animatedBackground")
             .suppressError()
             .intercept { chain ->
+                if (!qsTransparencyActive && !onlyNotifTransparencyActive) {
+                    return@intercept chain.proceed()
+                }
                 chain.proceedWithArgs { args ->
                     if (args.size < 3) return@proceedWithArgs
 

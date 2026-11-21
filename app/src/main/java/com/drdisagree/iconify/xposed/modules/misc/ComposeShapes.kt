@@ -120,14 +120,41 @@ class ComposeShapes(context: Context) : ModPack(context) {
         }
     }
 
+    private val nothingTileShellDepth = ThreadLocal.withInitial { 0 }
+
     private fun Array<Any?>.replaceQsButtonCircleShape(method: Executable) {
-        if (footerButtonsCornerRadiusOffset >= 0f) return
+        val inNothingTile = (nothingTileShellDepth.get() ?: 0) > 0
+        if (inNothingTile) {
+            if (activeIconCornerRadiusOffset == 0f &&
+                activeTileCornerRadiusOffset == 0f &&
+                inactiveTileCornerRadiusOffset == 0f
+            ) return
+        } else if (footerButtonsCornerRadiusOffset >= 0f) {
+            return
+        }
 
         val shapeIndex = shapeParamIndices.getOrPut(method) {
             (method as Method).parameterTypes.indexOfFirst { it.name == SHAPE_CLASS }
         }
+        if (shapeIndex == -1 || this[shapeIndex] == null) return
+
+        if (inNothingTile) {
+            val isIconCircle = circleShape != null && this[shapeIndex] === circleShape
+            val offset = if (isIconCircle) {
+                activeIconCornerRadiusOffset
+            } else if (activeTileCornerRadiusOffset != 0f) {
+                activeTileCornerRadiusOffset
+            } else {
+                inactiveTileCornerRadiusOffset
+            }
+            if (offset != 0f) {
+                this[shapeIndex] = pillShape(offset) ?: return
+            }
+            return
+        }
+
         val shape = circleShape ?: return
-        if (shapeIndex == -1 || this[shapeIndex] !== shape) return
+        if (this[shapeIndex] !== shape) return
 
         val isQsButton = Thread.currentThread().stackTrace.any { frame ->
             CIRCLE_SHAPE_OWNERS.any { frame.className.startsWith(it) }
@@ -315,6 +342,25 @@ class ComposeShapes(context: Context) : ModPack(context) {
                     args[radiusIndex] = newRadius
                 }
             }
+
+        findClass(NT_TILE_OUTER_SHELL_KT_CLASS, suppressError = true)
+            .hookMethodMatchPattern("QSTileOuterShell.*")
+            .suppressError()
+            .intercept { chain ->
+                if (activeIconCornerRadiusOffset == 0f &&
+                    activeTileCornerRadiusOffset == 0f &&
+                    inactiveTileCornerRadiusOffset == 0f
+                ) {
+                    return@intercept chain.proceed()
+                }
+                val prev = nothingTileShellDepth.get() ?: 0
+                nothingTileShellDepth.set(prev + 1)
+                try {
+                    chain.proceed()
+                } finally {
+                    nothingTileShellDepth.set(prev)
+                }
+            }
     }
 
     private fun hookSliderTrack() {
@@ -322,6 +368,9 @@ class ComposeShapes(context: Context) : ModPack(context) {
             .hookMethodMatchPattern("Track(-.*)?")
             .suppressError()
             .intercept { chain ->
+                if (!qsSliderStyle.isActive && !volumeSliderStyle.isActive) {
+                    return@intercept chain.proceed()
+                }
                 chain.proceedWithArgs { args ->
                     val style = currentSliderStyle() ?: return@proceedWithArgs
 
@@ -363,6 +412,9 @@ class ComposeShapes(context: Context) : ModPack(context) {
             .hookMethodMatchPattern("Thumb(-.*)?")
             .suppressError()
             .intercept { chain ->
+                if (!qsSliderStyle.hideThumb && !volumeSliderStyle.hideThumb) {
+                    return@intercept chain.proceed()
+                }
                 chain.proceedWithArgs { args ->
                     if (currentSliderStyle()?.hideThumb != true) return@proceedWithArgs
 
@@ -471,6 +523,8 @@ class ComposeShapes(context: Context) : ModPack(context) {
             "$SYSTEMUI_PACKAGE.qs.panels.ui.compose.infinitegrid.TileDefaults"
         private const val COMMON_TILE_DEFAULTS_CLASS =
             "$SYSTEMUI_PACKAGE.qs.panels.ui.compose.infinitegrid.CommonTileDefaults"
+        private const val NT_TILE_OUTER_SHELL_KT_CLASS =
+            "com.nothing.systemui.qs.workspace.workspace.QSTileOuterShellKt"
         private const val BRIGHTNESS_PACKAGE = "$SYSTEMUI_PACKAGE.brightness."
         private const val VOLUME_PACKAGE_SEGMENT = ".volume."
         private const val ROUNDED_CORNER_SHAPE_KT_CLASS =

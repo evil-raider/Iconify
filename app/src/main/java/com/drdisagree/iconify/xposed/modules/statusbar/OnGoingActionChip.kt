@@ -5,11 +5,14 @@ import android.content.Context
 import android.service.notification.StatusBarNotification
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import com.drdisagree.iconify.data.common.Const.SYSTEMUI_PACKAGE
 import com.drdisagree.iconify.data.keys.XposedKey
 import com.drdisagree.iconify.xposed.ModPack
 import com.drdisagree.iconify.xposed.core.PackageParam
+import com.drdisagree.iconify.xposed.core.compose.ComposeToolkit
 import com.drdisagree.iconify.xposed.core.hook.hookMethod
+import com.drdisagree.iconify.xposed.core.hook.hookMethodMatchPattern
 import com.drdisagree.iconify.xposed.core.reflect.callMethodSilently
 import com.drdisagree.iconify.xposed.core.reflect.callStaticMethod
 import com.drdisagree.iconify.xposed.core.reflect.findClass
@@ -17,10 +20,12 @@ import com.drdisagree.iconify.xposed.core.reflect.getField
 import com.drdisagree.iconify.xposed.core.reflect.getFieldSilently
 import com.drdisagree.iconify.xposed.core.reflect.setField
 import com.drdisagree.iconify.xposed.modules.extras.callbacks.HeadsUpCallback
+import com.drdisagree.iconify.xposed.modules.extras.utils.misc.ComposeViewHost
 import com.drdisagree.iconify.xposed.modules.extras.utils.misc.ViewHelper.reAddView
 import com.drdisagree.iconify.xposed.modules.extras.views.ongoingactionchip.OnGoingActionChipView
 import com.drdisagree.iconify.xposed.modules.extras.views.ongoingactionchip.OnGoingActionProgressController
 import com.drdisagree.iconify.xposed.utils.XPrefs.Xprefs
+import java.lang.reflect.Method
 import java.util.WeakHashMap
 
 @SuppressLint("DiscouragedApi")
@@ -108,6 +113,7 @@ class OnGoingActionChip(context: Context) : ModPack(context) {
         notificationIconContainerClass
             .hookMethod("onLayout")
             .runBefore { chain ->
+                if (!onGoingActionChipEnabled) return@runBefore
                 val iconContainer = chain.thisObject as ViewGroup
                 if (iconContainer.isStatusBarIconContainer()) {
                     mStatusBarIconContainers[iconContainer] = Unit
@@ -117,6 +123,7 @@ class OnGoingActionChip(context: Context) : ModPack(context) {
         notificationIconContainerClass
             .hookMethod("calculateIconXTranslations")
             .intercept { chain ->
+                if (!onGoingActionChipEnabled) return@intercept chain.proceed()
                 val hiddenStates = hideChipIconStates(chain.thisObject as ViewGroup)
 
                 try {
@@ -173,6 +180,63 @@ class OnGoingActionChip(context: Context) : ModPack(context) {
                 }
             }
         )
+
+        hookComposeStatusBar()
+    }
+
+    private fun hookComposeStatusBar() {
+        if (!ComposeViewHost.isAvailable) return
+
+        val clockComposableClass = findClass(
+            "$SYSTEMUI_PACKAGE.clock.ui.composable.ClockKt",
+            suppressError = true
+        ) ?: return
+
+        clockComposableClass
+            .hookMethodMatchPattern("Clock(-.+)?")
+            .suppressError()
+            .runAfter { chain, _ ->
+                if (!onGoingActionChipEnabled || mOnGoingActionChipView == null) return@runAfter
+
+                val method = chain.executable as Method
+                val isClockComposable =
+                    method.parameterTypes.any { it.name == ComposeToolkit.COMPOSER_CLASS } &&
+                            method.parameterTypes.any { it.name.endsWith(".ClockViewModel") }
+                if (!isClockComposable) return@runAfter
+
+                val isCalledFromStatusBar = Thread.currentThread().stackTrace.any {
+                    it.className.startsWith("$SYSTEMUI_PACKAGE.statusbar.pipeline.shared.ui.composable.StatusBarRootKt")
+                }
+                if (!isCalledFromStatusBar) return@runAfter
+
+                val composer = chain.args.getOrNull(
+                    ComposeToolkit.parameterIndex(method, ComposeToolkit.COMPOSER_CLASS)
+                ) ?: return@runAfter
+
+                ComposeViewHost.emitInGroup(composer, COMPOSE_CHIP_GROUP_KEY) { context ->
+                    FrameLayout(context).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        )
+                        clipChildren = false
+                        clipToPadding = false
+                        addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                            override fun onViewAttachedToWindow(v: View) {
+                                v.post {
+                                    mOnGoingActionChipView?.let { (v as FrameLayout).reAddView(it) }
+                                }
+                            }
+
+                            override fun onViewDetachedFromWindow(v: View) {}
+                        })
+                    }
+                }
+            }
+    }
+
+    companion object {
+        private const val COMPOSE_CHIP_GROUP_KEY = 0x1C0B1C40
     }
 
     private fun idOf(name: String): Int =

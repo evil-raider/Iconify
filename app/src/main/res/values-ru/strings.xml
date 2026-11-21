@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="activity_title_qs_shape_sliders">Скругление и ползунок QS</string>
+    <string name="qs_corner_radius_offset_title">Радиус скругления</string>
+    <string name="qs_active_tile_radius_title">Активная плитка (фон)</string>
+    <string name="qs_active_icon_radius_title">Иконка активной плитки</string>
+    <string name="qs_inactive_tile_radius_title">Неактивная плитка (фон)</string>
+    <string name="qs_inactive_icon_radius_title">Иконка неактивной плитки</string>
+    <string name="qs_brightness_slider_radius_title">Ползунок яркости</string>
+    <string name="qs_footer_buttons_radius_title">Кнопки внизу шторки</string>
+    <string name="section_title_qs_brightness_slider">Ползунок яркости</string>
+    <string name="hide_qs_slider_thumb_title">Скрыть бегунок яркости</string>
+    <string name="hide_qs_slider_thumb_desc">Убирает круглый маркер на шкале яркости</string>
+    <string name="qs_brightness_slider_bottom_title">Яркость снизу шторки</string>
+    <string name="qs_brightness_slider_bottom_desc">Переносит ползунок яркости под плитки QS</string>
+    <string name="qqs_brightness_slider_title">Яркость в мини-шторке</string>
+    <string name="qqs_brightness_slider_desc">Показывать ползунок яркости в свёрнутой шторке</string>
+    <string name="sb_drawable_signal_icon_title">Иконка сети из ресурсов (Drawable Signal Icon)</string>
+    <string name="sb_drawable_signal_icon_desc">Включать обязательно, чтобы работали выбранные наборы иконок сети (Wavy и др.)</string>
+</resources>

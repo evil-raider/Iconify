@@ -35,8 +35,15 @@ object StatusBarComposeClock {
         get() = !Xprefs.getBoolean(XposedKey.DUAL_STATUSBAR) &&
                 Xprefs.getString(XposedKey.STATUSBAR_CLOCK_POSITION) != "0"
 
+    private val isClockRight: Boolean
+        get() = !Xprefs.getBoolean(XposedKey.DUAL_STATUSBAR) &&
+                Xprefs.getString(XposedKey.STATUSBAR_CLOCK_POSITION) == "2"
+
     private val isHostActive: Boolean
         get() = hostRef?.get()?.isAttachedToWindow == true
+
+    val isActive: Boolean
+        get() = isHostActive
 
     @SuppressLint("DiscouragedApi")
     fun install() {
@@ -67,6 +74,8 @@ object StatusBarComposeClock {
                 if (!method.isClockComposable()) return@intercept chain.proceed()
                 if (!isCalledFromStatusBar()) return@intercept chain.proceed()
 
+                if (isClockRight) return@intercept null
+
                 val composer = chain.args.getOrNull(
                     ComposeToolkit.parameterIndex(method, ComposeToolkit.COMPOSER_CLASS)
                 ) ?: return@intercept chain.proceed()
@@ -77,6 +86,7 @@ object StatusBarComposeClock {
                 ComposeViewHost.emitInGroup(composer, GROUP_KEY, modifier) { createHost(it) }
                 null
             }
+
     }
 
     private fun guardClockState(clock: View) {
@@ -86,7 +96,7 @@ object StatusBarComposeClock {
         ComposeViewHost.runBeforeEachDraw(clock) {
             if (!isNeeded) return@runBeforeEachDraw
 
-            if (isHostActive) {
+            if (isHostActive || isClockRight) {
                 if (clock.visibility != View.VISIBLE) clock.visibility = View.VISIBLE
                 if (clock.alpha != 1f) clock.alpha = 1f
             } else if (clock.visibility != View.GONE) {
@@ -102,7 +112,8 @@ object StatusBarComposeClock {
     private fun isCalledFromStatusBar(): Boolean =
         Thread.currentThread().stackTrace.any { it.className.startsWith(STATUS_BAR_CLOCK_CALLER) }
 
-    private fun createHost(context: Context): View = FrameLayout(context).apply {
+    @SuppressLint("DiscouragedApi")
+    private fun createHost(context: Context, isRight: Boolean = false): View = FrameLayout(context).apply {
         layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
@@ -119,7 +130,22 @@ object StatusBarComposeClock {
                     if (hostRef?.get() !== host || !host.isAttachedToWindow) return@post
                     val clock = clockRef?.get() ?: return@post
 
-                    if (!isClockMoved) host.reAddView(clock)
+                    if (!isClockMoved || (isRight && isClockRight)) {
+                        host.reAddView(clock)
+                        if (isRight) {
+                            val startPadding = runCatching {
+                                context.resources.getDimensionPixelSize(
+                                    context.resources.getIdentifier(
+                                        "status_bar_left_clock_end_padding",
+                                        "dimen",
+                                        SYSTEMUI_PACKAGE
+                                    )
+                                )
+                            }.getOrDefault(0)
+                            clock.setPaddingRelative(startPadding, 0, 0, 0)
+                            (clock.layoutParams as? ViewGroup.MarginLayoutParams)?.setMargins(0, 0, 0, 0)
+                        }
+                    }
                     clock.visibility = View.VISIBLE
                     clock.alpha = 1f
                     guardClockState(clock)
@@ -134,9 +160,19 @@ object StatusBarComposeClock {
 
     private const val CLOCK_KT_CLASS = "$SYSTEMUI_PACKAGE.clock.ui.composable.ClockKt"
     private const val CLOCK_METHOD_PATTERN = "Clock(-.+)?"
+    private const val UNIFIED_BATTERY_KT_CLASS =
+        "$SYSTEMUI_PACKAGE.statusbar.pipeline.battery.ui.composable.UnifiedBatteryKt"
+    private const val UNIFIED_BATTERY_PATTERN = "UnifiedBattery(-.*)?"
+    private const val BATTERY_WITH_ESTIMATE_KT_CLASS =
+        "$SYSTEMUI_PACKAGE.statusbar.pipeline.battery.ui.composable.BatteryWithEstimateKt"
+    private const val BATTERY_WITH_ESTIMATE_PATTERN = "BatteryWithEstimate(-.*)?"
+    private const val NT_UNIFIED_BATTERY_KT_CLASS =
+        "$SYSTEMUI_PACKAGE.statusbar.pipeline.battery.ui.composable.NtUnifiedBatteryKt"
+    private const val NT_UNIFIED_BATTERY_PATTERN = "NtUnifiedBattery(-.*)?"
     private const val CLOCK_VIEW_MODEL_SUFFIX = ".ClockViewModel"
     private const val STATUS_BAR_CLOCK_CALLER =
         "$SYSTEMUI_PACKAGE.statusbar.pipeline.shared.ui.composable.StatusBarRootKt"
     private const val GROUP_KEY = 0x1C0B1C30
+    private const val RIGHT_GROUP_KEY = 0x1C0B1C31
     private const val GUARD_FIELD = "iconifyComposeClockGuard"
 }
