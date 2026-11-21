@@ -26,8 +26,9 @@ android {
         applicationId = "com.drdisagree.iconify"
         minSdk = 36
         targetSdk = 36
-        versionCode = 26
-        versionName = "8.0.0"
+        val versionCodeOverride = project.findProperty("nothingVersionCode")?.toString()?.toIntOrNull()
+        versionCode = versionCodeOverride ?: 26
+        versionName = if (versionCodeOverride != null) "8.0.0-nothing.v$versionCodeOverride" else "8.0.0"
         multiDexEnabled = true
         buildConfigField("int", "MIN_SDK_VERSION", "$minSdk")
         buildConfigField("int", "OVERLAY_VERSION_CODE", "6")
@@ -68,8 +69,9 @@ android {
         }
 
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            val skipMinify = project.hasProperty("skipMinify")
+            isMinifyEnabled = !skipMinify
+            isShrinkResources = !skipMinify
             signingConfig = releaseSigning
             resValue("string", "derived_app_name", "Iconify")
             proguardFiles(
