@@ -30,7 +30,15 @@
     <path
         android:fillColor="#00000000"
         android:fillType="nonZero"
-        android:pathData="M5.55,13.34L3.61,7.51Q2.88,5.32,4.58,4.59L9.44,3.14Q11.28,2.46,11.87,3.62L13.08,6.54M18.18,13.34L20.13,8.48Q20.61,7.19,19.64,6.54L15.75,4.59Q14.54,4.11,13.81,5.57L12.35,8.48"
+        android:pathData="M12.35,8.48L13.81,5.57Q14.54,4.11,15.75,4.59L19.64,6.54Q20.61,7.19,20.13,8.48L18.18,13.34"
+        android:strokeWidth="1.8239999"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:fillColor="#00000000"
+        android:fillType="nonZero"
+        android:pathData="M5.55,13.34L3.61,7.51Q2.88,5.32,4.58,4.59L9.44,3.14Q11.28,2.46,11.87,3.62L13.08,6.54"
         android:strokeWidth="1.8239999"
         android:strokeColor="#66000000"
         android:strokeLineCap="round"
