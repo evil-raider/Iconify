@@ -93,6 +93,8 @@ class QSTheme(context: Context) : ModPack(context) {
     private var toArgbMethod: Method? = null
     private val tileModifierToOriginal = WeakHashMap<Any, Any>()
     private val tileRecomposeScopes = Collections.newSetFromMap(WeakHashMap<Any, Boolean>())
+    private val tileStates = WeakHashMap<Any, Int>()
+    private var lastTileScope: Any? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun updatePrefs(vararg key: String) {
@@ -162,12 +164,16 @@ class QSTheme(context: Context) : ModPack(context) {
         tileDefaultsClass
             .hookMethod("getColorForState")
             .runAfter { chain, result ->
-                captureRecomposeScope(chain.executable, chain.args)
+                val scope = captureRecomposeScope(chain.executable, chain.args)
 
                 if (!customQsTheme) return@runAfter
 
                 val tileUiState = chain.args[0]
                 val state = tileUiState.getAnyField("visualState", "state") as? Int
+                if (scope != null && state != null) {
+                    tileStates[scope] = state
+                    lastTileScope = scope
+                }
                 val isDualTarget = if (chain.args[1] is Boolean) {
                     val iconOnly = chain.args[1] as Boolean
                     val handlesSecondaryClick = tileUiState.getAnyField(
@@ -417,12 +423,12 @@ class QSTheme(context: Context) : ModPack(context) {
         }
     }
 
-    private fun captureRecomposeScope(method: Executable, args: List<Any?>) {
+    private fun captureRecomposeScope(method: Executable, args: List<Any?>): Any? {
         val composerIndex = method.parameterTypes
             .indexOfFirst { it.name == COMPOSER_CLASS }
-        args.getOrNull(composerIndex)
+        return args.getOrNull(composerIndex)
             ?.callMethodSilently("getRecomposeScope")
-            ?.let { tileRecomposeScopes.add(it) }
+            ?.also { tileRecomposeScopes.add(it) }
     }
 
     private fun hookFooterActions() {
@@ -635,7 +641,13 @@ class QSTheme(context: Context) : ModPack(context) {
 
                     val origBgComposeColor = args[longIndices[0]] as? Long ?: return@proceedWithArgs
                     val origBgArgb = toArgbMethod?.invoke(null, origBgComposeColor) as? Int ?: 0
-                    val isActive = Color.alpha(origBgArgb) > 0 && Color.luminance(origBgArgb) > 0.65f
+                    val origContentComposeColor = args[longIndices[1]] as? Long ?: 0L
+                    val origContentArgb = toArgbMethod?.invoke(null, origContentComposeColor) as? Int ?: 0
+                    val hasOpaqueDarkContent = Color.alpha(origContentArgb) == 0 ||
+                            (Color.alpha(origContentArgb) >= 200 && Color.luminance(origContentArgb) < 0.5f)
+                    val isActive = Color.alpha(origBgArgb) >= 230 &&
+                            Color.luminance(origBgArgb) > 0.65f &&
+                            hasOpaqueDarkContent
 
                     val bgInt = (if (isActive) activeBgColor else inactiveBgColor).toColorInt()
                     val contentInt = (if (isActive) activeIconColor else inactiveIconColor).toColorInt()
@@ -759,8 +771,11 @@ class QSTheme(context: Context) : ModPack(context) {
 
         val shape = args[shapeIndex] ?: return
         val colorProvider = args[colorIndex] ?: return
-        val drawer = drawProxy { drawScope -> drawTileGradient(drawScope, shape, colorProvider) }
-            ?: return
+        val tileScope = lastTileScope
+        lastTileScope = null
+        val drawer = drawProxy { drawScope ->
+            drawTileGradient(drawScope, shape, colorProvider, tileScope)
+        } ?: return
 
         try {
             drawBehindMethod?.invoke(null, original, drawer)?.let {
@@ -771,18 +786,53 @@ class QSTheme(context: Context) : ModPack(context) {
         }
     }
 
-    private fun drawTileGradient(drawScope: Any, shape: Any, colorProvider: Any) {
+    private fun drawTileGradient(
+        drawScope: Any,
+        shape: Any,
+        colorProvider: Any,
+        tileScope: Any?
+    ) {
         try {
             val currentColor = colorProvider.callMethod("invoke")?.getFieldSilently("value")
                     as? Long ?: return
             val argb = toArgbMethod?.invoke(null, currentColor) as? Int ?: return
+            val currentAlpha = Color.alpha(argb)
+            val tileState = tileScope?.let { tileStates[it] }
+
+            if (tileState != null && tileState != STATE_ACTIVE) {
+                if (currentAlpha == 0) {
+                    val restingColor = (if (tileState == STATE_UNAVAILABLE) {
+                        unavailableBgColor
+                    } else {
+                        inactiveBgColor
+                    }).toColorInt()
+                    if (Color.alpha(restingColor) > 0) {
+                        val canvas = nativeCanvasOf(drawScope) ?: return
+                        val packedSize = drawSizeOf(drawScope) ?: return
+                        val outline = shape.callMethodByPrefix(
+                            "createOutline",
+                            packedSize,
+                            drawScope.callMethod("getLayoutDirection"),
+                            drawScope
+                        ) ?: return
+                        val path = outlineToPath(outline) ?: return
+                        tileGradientPaint.shader = null
+                        tileGradientPaint.color = restingColor
+                        canvas.drawPath(path, tileGradientPaint)
+                    }
+                }
+                return
+            }
+
             val restingAlpha = minOf(
                 Color.alpha(inactiveBgColor.toColorInt()),
                 Color.alpha(unavailableBgColor.toColorInt())
             )
-            val currentAlpha = Color.alpha(argb)
             val gradientAlpha = if (restingAlpha == 0) {
-                if (currentAlpha == 0) 1f else 0f
+                val rgb = argb and 0x00FFFFFF
+                val isActiveColor = rgb == (activeBgColor.toColorInt() and 0x00FFFFFF) ||
+                        rgb == (activeIconBgColor.toColorInt() and 0x00FFFFFF)
+                if (currentAlpha == 0 && isActiveColor) 1f else 0f
             } else {
                 (1f - currentAlpha.toFloat() / restingAlpha).coerceIn(0f, 1f)
             }
