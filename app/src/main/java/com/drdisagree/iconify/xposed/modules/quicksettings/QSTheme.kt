@@ -607,6 +607,7 @@ class QSTheme(context: Context) : ModPack(context) {
 
     private var nothingTileActiveDrawer: Any? = null
     private var nothingTileInactiveDrawer: Any? = null
+    private var lastNothingTileIsActive = false
     private val nothingTileActiveModCache = WeakHashMap<Any, Any>()
     private val nothingTileInactiveModCache = WeakHashMap<Any, Any>()
     private val nothingTileRect = RectF()
@@ -648,6 +649,7 @@ class QSTheme(context: Context) : ModPack(context) {
                     val isActive = Color.alpha(origBgArgb) >= 230 &&
                             Color.luminance(origBgArgb) > 0.65f &&
                             hasOpaqueDarkContent
+                    lastNothingTileIsActive = isActive
 
                     val bgInt = (if (isActive) activeBgColor else inactiveBgColor).toColorInt()
                     val contentInt = (if (isActive) activeIconColor else inactiveIconColor).toColorInt()
@@ -688,10 +690,12 @@ class QSTheme(context: Context) : ModPack(context) {
                 }
             }
 
-        findClass(
+        val tileBodyClass = findClass(
             "com.nothing.systemui.qs.workspace.workspace.TileBodyKt",
             suppressError = true
         )
+
+        tileBodyClass
             .hookMethodMatchPattern("IconDisc-.*")
             .suppressError()
             .intercept { chain ->
@@ -703,6 +707,48 @@ class QSTheme(context: Context) : ModPack(context) {
                         args[colorIndex] = ComposeToolkit.colorOf(0)
                     }
                 }
+            }
+
+        tileBodyClass
+            ?.declaredMethods
+            ?.filter { method ->
+                !method.name.startsWith("IconDisc-") &&
+                        !method.name.endsWith("\$default") &&
+                        method.parameterTypes.any { it.name == COMPOSER_CLASS } &&
+                        method.parameterTypes.any { it == Long::class.javaPrimitiveType }
+            }
+            ?.map { it.name }
+            ?.distinct()
+            ?.forEach { methodName ->
+                tileBodyClass
+                    .hookMethod(methodName)
+                    .suppressError()
+                    .intercept { chain ->
+                        if (!customQsTheme || lastNothingTileIsActive) {
+                            return@intercept chain.proceed()
+                        }
+                        chain.proceedWithArgs { args ->
+                            val method = chain.executable as Method
+                            val types = method.parameterTypes
+                            val replacement = ComposeToolkit.colorOf(inactiveIconColor)
+                            for (i in types.indices) {
+                                if (types[i] != Long::class.javaPrimitiveType) continue
+                                if (ComposeToolkit.isDefaultArg(method, args, i)) continue
+                                val raw = args[i] as? Long ?: continue
+                                if (raw == 0L || (raw and 0xFFFFFFFFL) != 0L) continue
+                                val argb = toArgbMethod?.invoke(null, raw) as? Int ?: continue
+                                if (Color.alpha(argb) == 0) continue
+                                val r = Color.red(argb)
+                                val g = Color.green(argb)
+                                val b = Color.blue(argb)
+                                val spread = maxOf(r, g, b) - minOf(r, g, b)
+                                val lum = Color.luminance(argb)
+                                if (spread < 35 && lum in 0.25f..0.85f) {
+                                    args[i] = replacement
+                                }
+                            }
+                        }
+                    }
             }
     }
 
